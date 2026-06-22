@@ -1,282 +1,228 @@
-// main.cpp
-//
-// Application entry point. Wires together:
-//   - UdpReceiver: live quaternion stream from the 10 ESP32 nodes
-//   - MotionRecorder: record live stream to CSV / play CSV back
-//   - Renderer: OpenGL 3.3 GPU-skinned humanoid driven by either of the
-//     above, depending on mode
-//
-// Two run modes:
-//
-//   1) Normal (no args): live capture + single-recording record/playback.
-//        ./body_tracking_visualizer
-//
-//   2) Compare mode (two CSV paths as args): loads both recordings and
-//      plays them back side by side, in lockstep, for visually comparing
-//      two takes (e.g. a reference performance vs a student's attempt).
-//        ./body_tracking_visualizer recordings/teacher.csv recordings/student.csv
-//
-// Controls (focus the GL window first):
-//   Normal mode:
-//     R        - start/stop recording (saves to recordings/take_<N>.csv)
-//     L        - load the most recently saved recording
-//     SPACE    - play / pause loaded recording
-//     S        - stop playback, return to live view
-//     LEFT/RIGHT arrows - seek backward/forward 1 second during playback
-//   Compare mode:
-//     SPACE    - play / pause both recordings together
-//     LEFT/RIGHT arrows - seek both recordings together, -1s/+1s
-//   Both modes:
-//     ESC      - quit
+// main.cpp — ESP32 Bharatanatyam Body Tracking Visualizer
+// Fixed: safe playback loop, no segfault, bounds-checked pose access
 
+#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+#include <glad/gl.h>
 
-#include <chrono>
 #include <cstdio>
-#include <ctime>
-#include <sstream>
+#include <cstring>
 #include <string>
+#include <vector>
+#include <ctime>
 
-#include "MotionRecorder.h"
 #include "Network.h"
-#include "NetworkProtocol.h"
+#include "MotionRecorder.h"
+#include "Model.h"
 #include "Renderer.h"
+#include "Skeleton.h"
 
-namespace {
+using namespace mocap;
 
-std::string timestampedFilename() {
-    std::time_t t = std::time(nullptr);
-    std::tm tmStruct{};
-    localtime_r(&t, &tmStruct);
-    char buf[64];
-    std::strftime(buf, sizeof(buf), "take_%Y%m%d_%H%M%S.csv", &tmStruct);
-    return std::string("recordings/") + buf;
+// ── generate timestamped filename ────────────────────────────────────────────
+static std::string makeFilename(const char* prefix) {
+    time_t t = time(nullptr);
+    struct tm* tm = localtime(&t);
+    char buf[128];
+    snprintf(buf, sizeof(buf), "recordings/%s_%04d%02d%02d_%02d%02d%02d.csv",
+             prefix,
+             tm->tm_year+1900, tm->tm_mon+1, tm->tm_mday,
+             tm->tm_hour, tm->tm_min, tm->tm_sec);
+    return buf;
 }
 
-// --- simple edge-triggered key state so holding a key doesn't spam actions ---
-struct KeyEdge {
-    bool wasDown = false;
-    bool pressedThisFrame(GLFWwindow* w, int key) {
-        bool down = glfwGetKey(w, key) == GLFW_PRESS;
-        bool edge = down && !wasDown;
-        wasDown = down;
-        return edge;
-    }
+// ── key edge-detection helper ─────────────────────────────────────────────────
+struct KeyState {
+    bool prev = false;
+    bool curr = false;
+    void update(bool pressed) { prev = curr; curr = pressed; }
+    bool justPressed() const  { return curr && !prev; }
 };
 
-} // namespace
-
-namespace {
-
-// Runs the side-by-side comparison of two pre-recorded CSV takes. Returns
-// the process exit code.
-int runCompareMode(mocap::Renderer& renderer, const std::string& pathA,
-                    const std::string& pathB) {
-    using namespace mocap;
-
-    MotionRecorder takeA, takeB;
-
-    if (!takeA.loadRecording(pathA)) {
-        std::fprintf(stderr, "Failed to load '%s' -- check the path and that it's a "
-                              "CSV produced by this app (header: t,s0_w,s0_x,...).\n",
-                     pathA.c_str());
-        return 1;
-    }
-    if (!takeB.loadRecording(pathB)) {
-        std::fprintf(stderr, "Failed to load '%s'.\n", pathB.c_str());
-        return 1;
-    }
-
-    std::printf("Loaded A: %s (%.2fs, %zu frames)\n", pathA.c_str(),
-                takeA.playbackDuration(), takeA.recordedFrameCount());
-    std::printf("Loaded B: %s (%.2fs, %zu frames)\n", pathB.c_str(),
-                takeB.playbackDuration(), takeB.recordedFrameCount());
-    std::printf("A is drawn on the LEFT (warm tone), B on the RIGHT (blue tone).\n");
-    std::printf("Controls: SPACE=play/pause both, LEFT/RIGHT=seek both, ESC=quit\n");
-
-    KeyEdge keySpace, keyLeft, keyRight;
-
-    while (!renderer.shouldClose()) {
-        renderer.pollEvents();
-        double t = renderer.getTime();
-        GLFWwindow* win = renderer.window();
-
-        if (glfwGetKey(win, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-            glfwSetWindowShouldClose(win, GLFW_TRUE);
-        }
-
-        // Play/pause both takes together so they stay in lockstep --
-        // driving both transports from the same key press is what keeps
-        // "side by side" actually meaning "at the same point in time".
-        if (keySpace.pressedThisFrame(win, GLFW_KEY_SPACE)) {
-            bool nowPlaying = !takeA.isPlaying();
-            if (nowPlaying) {
-                takeA.play();
-                takeB.play();
-                std::printf("Playing both...\n");
-            } else {
-                takeA.pause();
-                takeB.pause();
-                std::printf("Paused at A=%.2fs B=%.2fs\n", takeA.playbackTime(),
-                            takeB.playbackTime());
-            }
-        }
-
-        if (keyLeft.pressedThisFrame(win, GLFW_KEY_LEFT)) {
-            takeA.seek(takeA.playbackTime() - 1.0);
-            takeB.seek(takeB.playbackTime() - 1.0);
-        }
-        if (keyRight.pressedThisFrame(win, GLFW_KEY_RIGHT)) {
-            takeA.seek(takeA.playbackTime() + 1.0);
-            takeB.seek(takeB.playbackTime() + 1.0);
-        }
-
-        takeA.update(t);
-        takeB.update(t);
-
-        renderer.renderCompare(takeA.pose, takeB.pose);
-    }
-
-    std::printf("Shutting down.\n");
-    return 0;
+// ── make sure recordings directory exists ─────────────────────────────────────
+static void ensureDir() {
+    // Simple: try to create it; ignore if exists
+    system("mkdir -p recordings");
 }
 
-} // namespace
-
+// ─────────────────────────────────────────────────────────────────────────────
 int main(int argc, char** argv) {
-    using namespace mocap;
+    ensureDir();
 
-    std::printf("=== ESP32 Body Tracking Visualizer ===\n");
-
-    // Compare mode: two CSV paths given on the command line. This mode
-    // doesn't need the UDP receiver at all -- it's purely two pre-recorded
-    // takes played back together -- so we skip starting it.
+    // ── compare mode: two CSV files as args ──────────────────────────────────
     bool compareMode = (argc == 3);
+    std::string csvA, csvB;
+    if (compareMode) {
+        csvA = argv[1];
+        csvB = argv[2];
+        printf("Compare mode: %s  vs  %s\n", csvA.c_str(), csvB.c_str());
+    }
 
+    // ── networking (only in live mode) ───────────────────────────────────────
+    UdpReceiver udp;
+    if (!compareMode) {
+        if (!udp.start(5005)) {
+            fprintf(stderr, "Warning: UDP receiver failed to start\n");
+        } else {
+            printf("UdpReceiver: listening on UDP port 5005\n");
+        }
+    }
+
+    // ── model ─────────────────────────────────────────────────────────────────
+    Model model;
+    const char* GLB_PATH = "visualizer/assets/models/human.glb";
+    if (!model.loadFromFile(GLB_PATH)) {
+        fprintf(stderr, "Warning: could not load %s — will render without mesh\n", GLB_PATH);
+    } else {
+        printf("Model: loaded '%s' -- %d bones\n", GLB_PATH, model.boneCount());
+    }
+
+    // ── renderer ──────────────────────────────────────────────────────────────
     Renderer renderer;
-    bool rendererOk = renderer.init(
-        compareMode ? 1600 : 1280, 720,
-        compareMode ? "ESP32 Body Tracking - Compare Takes"
-                    : "ESP32 Body Tracking - Bharatanatyam Capture",
-        "visualizer/assets/models/human.glb",
-        "visualizer/shaders/skinned.vert",
-        "visualizer/shaders/skinned.frag");
-
-    if (!rendererOk) {
-        std::fprintf(stderr, "Renderer init failed -- check the messages above. "
-                              "Most likely human.glb is missing from "
-                              "visualizer/assets/models/, or a bone name in "
-                              "Skeleton.h doesn't match your GLB's joint names.\n");
+    if (!renderer.init("ESP32 Body Tracking - Bharatanatyam Capture", 900, 700)) {
+        fprintf(stderr, "Renderer init failed\n");
         return 1;
     }
+    printf("Live view running. Controls: R=record S=stop L=load SPACE=play/pause Arrows=seek ESC=quit\n");
+
+    // ── motion recorders ─────────────────────────────────────────────────────
+    MotionRecorder recLive;   // live capture + single-file playback
+    MotionRecorder recA, recB; // compare mode
 
     if (compareMode) {
-        return runCompareMode(renderer, argv[1], argv[2]);
+        if (!recA.loadRecording(csvA)) {
+            fprintf(stderr, "Could not load %s\n", csvA.c_str());
+            return 1;
+        }
+        if (!recB.loadRecording(csvB)) {
+            fprintf(stderr, "Could not load %s\n", csvB.c_str());
+            return 1;
+        }
+        recA.play();
+        recB.play();
+        printf("Compare playback started. SPACE=pause/resume ESC=quit\n");
     }
 
-    UdpReceiver receiver(kDefaultUdpPort);
-    if (!receiver.start()) {
-        std::fprintf(stderr, "Failed to start UDP receiver on port %u. "
-                              "Is something else using it?\n", kDefaultUdpPort);
-        return 1;
-    }
+    // ── key state ─────────────────────────────────────────────────────────────
+    KeyState kR, kS, kL, kSpace, kLeft, kRight;
+    std::string lastSavedFile;
+    bool wasRecording = false;
 
-    MotionRecorder recorder;
-    std::string lastSavedRecording;
-
-    KeyEdge keyR, keySpace, keyS, keyL, keyLeft, keyRight;
-
-    std::printf("Live view running. Controls: R=record S=stop L=load SPACE=play/pause "
-                "Arrows=seek ESC=quit\n");
-    std::printf("Tip: run with two CSV file paths as arguments to compare two takes "
-                "side by side instead, e.g.:\n"
-                "  ./body_tracking_visualizer recordings/teacher.csv recordings/student.csv\n");
-
+    // ── main loop ─────────────────────────────────────────────────────────────
     while (!renderer.shouldClose()) {
         renderer.pollEvents();
-        double t = renderer.getTime();
 
-        GLFWwindow* win = renderer.window();
+        double now = glfwGetTime();
 
-        if (glfwGetKey(win, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-            glfwSetWindowShouldClose(win, GLFW_TRUE);
-        }
+        // ── key updates ───────────────────────────────────────────────────────
+        kR.update(renderer.isKeyPressed(GLFW_KEY_R));
+        kS.update(renderer.isKeyPressed(GLFW_KEY_S));
+        kL.update(renderer.isKeyPressed(GLFW_KEY_L));
+        kSpace.update(renderer.isKeyPressed(GLFW_KEY_SPACE));
+        kLeft.update(renderer.isKeyPressed(GLFW_KEY_LEFT));
+        kRight.update(renderer.isKeyPressed(GLFW_KEY_RIGHT));
 
-        // ---- Recording toggle ----
-        if (keyR.pressedThisFrame(win, GLFW_KEY_R)) {
-            if (!recorder.isRecording()) {
-                recorder.startRecording();
-                std::printf("Recording started...\n");
-            } else {
-                lastSavedRecording = timestampedFilename();
-                bool saved = recorder.stopRecording(lastSavedRecording);
-                std::printf(saved ? "Recording saved to %s (%zu frames)\n"
-                                   : "Recording stop failed (no frames captured?)\n",
-                            lastSavedRecording.c_str(), recorder.recordedFrameCount());
-            }
-        }
-
-        // ---- Load most recent recording ----
-        if (keyL.pressedThisFrame(win, GLFW_KEY_L)) {
-            if (!lastSavedRecording.empty()) {
-                if (recorder.loadRecording(lastSavedRecording)) {
-                    std::printf("Loaded %s (%.2fs)\n", lastSavedRecording.c_str(),
-                                recorder.playbackDuration());
-                } else {
-                    std::printf("Failed to load %s\n", lastSavedRecording.c_str());
-                }
-            } else {
-                std::printf("No recording saved yet this session -- press R twice to "
-                            "record one first.\n");
-            }
-        }
-
-        // ---- Play / pause ----
-        if (keySpace.pressedThisFrame(win, GLFW_KEY_SPACE)) {
-            if (recorder.hasRecordingLoaded()) {
-                if (recorder.isPlaying()) {
-                    recorder.pause();
-                    std::printf("Paused at %.2fs\n", recorder.playbackTime());
-                } else {
-                    recorder.play();
-                    std::printf("Playing...\n");
+        if (!compareMode) {
+            // ── ingest UDP packets into live recorder ─────────────────────────
+            auto samples = udp.getAllSamples();
+            for (auto& s : samples) {
+                if (s.sensorId >= 0 && s.sensorId < NUM_SENSORS) {
+                    recLive.onSensorUpdate(s.sensorId, s.qw, s.qx, s.qy, s.qz);
                 }
             }
-        }
 
-        // ---- Stop playback, return to live ----
-        if (keyS.pressedThisFrame(win, GLFW_KEY_S)) {
-            if (recorder.isPlaying() || recorder.isPaused()) {
-                recorder.stop();
-                std::printf("Stopped playback. Back to live view.\n");
+            // ── R: toggle recording ───────────────────────────────────────────
+            if (kR.justPressed()) {
+                if (!recLive.isRecording()) {
+                    recLive.startRecording();
+                    printf("Recording started...\n");
+                } else {
+                    std::string fn = makeFilename("take");
+                    int frames = recLive.stopRecording(fn);
+                    lastSavedFile = fn;
+                    printf("Recording saved to %s (%d frames)\n", fn.c_str(), frames);
+                }
             }
+
+            // ── S: force stop recording ───────────────────────────────────────
+            if (kS.justPressed() && recLive.isRecording()) {
+                std::string fn = makeFilename("take");
+                int frames = recLive.stopRecording(fn);
+                lastSavedFile = fn;
+                printf("Recording saved to %s (%d frames)\n", fn.c_str(), frames);
+            }
+
+            // ── L: load last saved recording ──────────────────────────────────
+            if (kL.justPressed()) {
+                if (lastSavedFile.empty()) {
+                    printf("No recording saved yet this session -- press R twice to record one first.\n");
+                } else {
+                    if (recLive.loadRecording(lastSavedFile)) {
+                        printf("Loaded %s\n", lastSavedFile.c_str());
+                    } else {
+                        printf("Failed to load %s\n", lastSavedFile.c_str());
+                    }
+                }
+            }
+
+            // ── SPACE: play / pause ───────────────────────────────────────────
+            if (kSpace.justPressed()) {
+                if (recLive.isPlaying()) {
+                    recLive.pause();
+                    printf("Paused.\n");
+                } else {
+                    recLive.play();
+                    printf("Playing...\n");
+                }
+            }
+
+            // ── Arrow keys: seek ──────────────────────────────────────────────
+            if (kLeft.justPressed())  recLive.seek(recLive.currentTime() - 1.0f);
+            if (kRight.justPressed()) recLive.seek(recLive.currentTime() + 1.0f);
+
+            // ── tick recorder ────────────────────────────────────────────────
+            recLive.update(now);
+
+        } else {
+            // compare mode controls
+            if (kSpace.justPressed()) {
+                if (recA.isPlaying()) {
+                    recA.pause(); recB.pause();
+                    printf("Paused.\n");
+                } else {
+                    recA.play(); recB.play();
+                    printf("Playing...\n");
+                }
+            }
+            if (kLeft.justPressed()) {
+                float t = recA.currentTime() - 1.0f;
+                recA.seek(t); recB.seek(t);
+            }
+            if (kRight.justPressed()) {
+                float t = recA.currentTime() + 1.0f;
+                recA.seek(t); recB.seek(t);
+            }
+
+            recA.update(now);
+            recB.update(now);
         }
 
-        // ---- Seek ----
-        if (keyLeft.pressedThisFrame(win, GLFW_KEY_LEFT)) {
-            recorder.seek(recorder.playbackTime() - 1.0);
+        // ── render ────────────────────────────────────────────────────────────
+        if (compareMode) {
+            renderer.renderCompare(model, recA.pose, recB.pose);
+        } else {
+            renderer.render(model, recLive.pose);
         }
-        if (keyRight.pressedThisFrame(win, GLFW_KEY_RIGHT)) {
-            recorder.seek(recorder.playbackTime() + 1.0);
-        }
-
-        // ---- Feed live sensor data into the recorder every frame ----
-        // (onSensorUpdate no-ops the live-pose write internally while
-        // playback is active, so this is always safe to call.)
-        auto samples = receiver.getAllSamples();
-        for (int s = 0; s < kNumSensors; ++s) {
-            const LatestSample& sample = samples[s];
-            recorder.onSensorUpdate(s, Quat{sample.qw, sample.qx, sample.qy, sample.qz});
-        }
-        recorder.update(t);
-
-        // ---- Render whatever recorder.pose currently holds ----
-        // (live values when idle/recording, recorded+interpolated values
-        // when playing/paused -- Renderer doesn't need to know which.)
-        renderer.render(recorder.pose);
     }
 
-    receiver.stop();
-    std::printf("Shutting down.\n");
+    // ── cleanup ───────────────────────────────────────────────────────────────
+    if (!compareMode && recLive.isRecording()) {
+        std::string fn = makeFilename("take_autosave");
+        recLive.stopRecording(fn);
+        printf("Auto-saved recording to %s\n", fn.c_str());
+    }
+    udp.stop();
+    renderer.shutdown();
+    printf("Shutting down.\n");
     return 0;
 }
