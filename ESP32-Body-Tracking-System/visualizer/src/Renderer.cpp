@@ -1,6 +1,7 @@
 // Renderer.cpp
 #include "Renderer.h"
 
+#define GLFW_INCLUDE_NONE
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 
@@ -99,44 +100,35 @@ double Renderer::getTime() const {
 }
 
 void Renderer::computeBoneMatrices(const std::array<Quat, kNumSensors>& sensorPose) {
-    // World-space (well, model-root-space) transform for each logical
-    // bone, computed via forward kinematics: each bone's world rotation
-    // is its sensor's quaternion composed with its parent's world
-    // rotation. This intentionally keeps bone *lengths* fixed (from the
-    // bind pose) and only drives *rotation* from the sensors -- exactly
-    // matching what 10 orientation-only IMUs can actually give you (no
-    // positional/translation data).
     std::vector<Quat> worldRotation(kBoneCount);
     std::vector<Vec3> worldPosition(kBoneCount);
 
-    // Bind-pose local offsets are baked into the GLB; we approximate them
-    // here as unit-length bone vectors along Y, scaled per segment. For a
-    // production-accurate rig, replace boneLocalOffset() with the actual
-    // bind-pose translation extracted from the GLB's node transforms.
+    // Bone local offsets in metres, tuned for a ~1.7m tall Mixamo rig.
+    // Hip sits at Y=0.95, head crown at ~Y=1.70.
     auto boneLocalOffset = [](int logicalIdx) -> Vec3 {
         switch (logicalIdx) {
-            case 1: return {0, 0.25f, 0};   // spine
-            case 2: return {0, 0.20f, 0};   // head
-            case 3: return {-0.18f, 0.05f, 0}; // L upper arm
-            case 4: return {-0.25f, 0, 0};     // L forearm
-            case 5: return {0.18f, 0.05f, 0};  // R upper arm
-            case 6: return {0.25f, 0, 0};      // R forearm
-            case 7: return {-0.10f, -0.05f, 0}; // L thigh
-            case 8: return {0.10f, -0.05f, 0};  // R thigh
-            case 9: return {0, -0.45f, 0};      // L foot (FK-only)
-            case 10: return {0, -0.45f, 0};     // R foot (FK-only)
-            default: return {0, 0, 0};          // hip/root
+            case 1:  return {0,      0.28f,  0};      // hip  -> spine
+            case 2:  return {0,      0.55f,  0};      // spine -> head
+            case 3:  return {-0.20f, 0.12f,  0};      // spine -> L upper arm
+            case 4:  return {-0.28f, 0,      0};      // L upper arm -> L forearm
+            case 5:  return { 0.20f, 0.12f,  0};      // spine -> R upper arm
+            case 6:  return { 0.28f, 0,      0};      // R upper arm -> R forearm
+            case 7:  return {-0.10f,-0.08f,  0};      // hip  -> L thigh
+            case 8:  return { 0.10f,-0.08f,  0};      // hip  -> R thigh
+            case 9:  return {0,     -0.48f,  0};      // L thigh -> L foot (FK)
+            case 10: return {0,     -0.48f,  0};      // R thigh -> R foot (FK)
+            default: return {0,      0,      0};      // hip/root at world origin
         }
     };
 
     for (int i = 0; i < kBoneCount; ++i) {
         const BoneMapping& bm = kSkeletonBones[i];
-
         Quat localRot = (bm.sensorId >= 0) ? sensorPose[bm.sensorId] : Quat{};
 
         if (bm.parentIndex < 0) {
+            // Root bone: place hip at Y=0.95 so feet land near Y=0 (floor)
             worldRotation[i] = localRot;
-            worldPosition[i] = {0, 0, 0};
+            worldPosition[i] = {0, 0.95f, 0};
         } else {
             worldRotation[i] = worldRotation[bm.parentIndex] * localRot;
             Vec3 offset = worldRotation[bm.parentIndex].rotate(boneLocalOffset(i));
@@ -144,9 +136,6 @@ void Renderer::computeBoneMatrices(const std::array<Quat, kNumSensors>& sensorPo
         }
     }
 
-    // Convert logical (world rotation, world position) pairs into the
-    // model-bone-indexed matrix array the shader actually consumes,
-    // composed with each bone's inverse bind matrix from the GLB.
     for (int i = 0; i < kBoneCount; ++i) {
         int modelIdx = logicalToModelBoneIndex_[i];
         if (modelIdx < 0) continue;
@@ -172,9 +161,6 @@ void Renderer::drawSkeleton(const std::array<Quat, kNumSensors>& sensorPose,
                              float xOffset, const Vec3& albedoTint) {
     computeBoneMatrices(sensorPose);
 
-    // Shift the whole skeleton sideways by translating the model matrix --
-    // bone matrices themselves stay root-relative, so this is a single
-    // cheap translation rather than re-running FK with an offset baked in.
     Mat4 model = Mat4::fromQuatTranslation(Quat{1, 0, 0, 0}, Vec3{xOffset, 0, 0});
 
     shader_.setMat4("uModel", model);
@@ -189,7 +175,7 @@ void Renderer::drawSkeleton(const std::array<Quat, kNumSensors>& sensorPose,
     shader_.setVec3("uAlbedo", albedoTint);
     shader_.setFloat("uRoughness", 0.6f);
     shader_.setFloat("uMetalness", 0.0f);
-    shader_.setFloat("uAmbientStrength", 0.15f);
+    shader_.setFloat("uAmbientStrength", 0.18f);
 
     model_.draw();
 }
@@ -197,16 +183,19 @@ void Renderer::drawSkeleton(const std::array<Quat, kNumSensors>& sensorPose,
 void Renderer::render(const std::array<Quat, kNumSensors>& sensorPose) {
     beginFrame();
 
-    Vec3 eye{0.0f, 1.0f, 3.2f};
+    // Camera: slightly above eye level, pulled back enough to frame a full
+    // standing adult (~1.7 m) with comfortable headroom. Target the chest
+    // (Y≈1.2) rather than the very centre so feet are visible at bottom.
+    Vec3 eye   {0.0f, 1.0f, 4.0f};
     Vec3 target{0.0f, 0.9f, 0.0f};
-    Vec3 up{0.0f, 1.0f, 0.0f};
+    Vec3 up    {0.0f, 1.0f, 0.0f};
 
     Mat4 view = Mat4::lookAt(eye, target, up);
-    Mat4 proj = Mat4::perspective(45.0f * 3.14159265f / 180.0f,
-                                   static_cast<float>(width_) / static_cast<float>(height_),
-                                   0.1f, 100.0f);
+    Mat4 proj = Mat4::perspective(
+        50.0f * 3.14159265f / 180.0f,
+        static_cast<float>(width_) / static_cast<float>(height_),
+        0.1f, 100.0f);
 
-    // Skin-ish neutral tone for the single-skeleton live/playback view.
     drawSkeleton(sensorPose, view, proj, eye, 0.0f, Vec3{0.75f, 0.55f, 0.45f});
 
     endFrame();
@@ -217,26 +206,23 @@ void Renderer::renderCompare(const std::array<Quat, kNumSensors>& poseA,
                               float separation) {
     beginFrame();
 
-    // Pull the camera back and recenter so both skeletons fit in frame --
-    // wider FOV-equivalent than the single-skeleton view since we're now
-    // framing two figures plus the gap between them.
-    Vec3 eye{0.0f, 1.1f, 4.4f};
+    // Pull back further to frame two full-body skeletons side by side.
+    Vec3 eye   {0.0f, 1.0f, 5.5f};
     Vec3 target{0.0f, 0.9f, 0.0f};
-    Vec3 up{0.0f, 1.0f, 0.0f};
+    Vec3 up    {0.0f, 1.0f, 0.0f};
 
     Mat4 view = Mat4::lookAt(eye, target, up);
-    Mat4 proj = Mat4::perspective(50.0f * 3.14159265f / 180.0f,
-                                   static_cast<float>(width_) / static_cast<float>(height_),
-                                   0.1f, 100.0f);
+    Mat4 proj = Mat4::perspective(
+        55.0f * 3.14159265f / 180.0f,
+        static_cast<float>(width_) / static_cast<float>(height_),
+        0.1f, 100.0f);
 
     float half = separation * 0.5f;
 
-    // Distinct albedo tints so the two skeletons are immediately
-    // distinguishable at a glance, independent of position:
-    //   A (left)  -- warm neutral skin tone, same as single-view default
-    //   B (right) -- cool blue tint
+    // Left  (A) -- warm skin tone (reference / teacher)
+    // Right (B) -- cool blue     (student)
     drawSkeleton(poseA, view, proj, eye, -half, Vec3{0.75f, 0.55f, 0.45f});
-    drawSkeleton(poseB, view, proj, eye, half, Vec3{0.45f, 0.60f, 0.85f});
+    drawSkeleton(poseB, view, proj, eye,  half, Vec3{0.45f, 0.60f, 0.85f});
 
     endFrame();
 }
