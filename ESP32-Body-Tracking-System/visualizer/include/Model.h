@@ -1,12 +1,12 @@
 #pragma once
 
-#include <glad/gl.h>
 #include <map>
 #include <string>
 #include <vector>
 
 #include "MathTypes.h"
 
+// Forward declarations at global scope (NOT inside namespace)
 struct aiNode;
 struct aiScene;
 struct aiMesh;
@@ -30,11 +30,17 @@ struct BoneInfo {
 class Model {
 public:
     Model() = default;
-    ~Model();
+
+    // Do NOT put GL calls in destructor — GL context may already be gone.
+    // Call destroy() explicitly before glfwTerminate().
+    ~Model() = default;
 
     bool loadFromFile(const std::string& path);
 
-    // Safe draw — does nothing if VAO not ready
+    // Call this BEFORE renderer.shutdown() to free GPU resources safely
+    void destroy();
+
+    // Safe draw — does nothing if not loaded
     void draw() const;
 
     int  boneCount() const { return static_cast<int>(bones_.size()); }
@@ -42,10 +48,10 @@ public:
     int  findBoneIndex(const std::string& name) const;
 
 private:
-    GLuint vao_  = 0;
-    GLuint vbo_  = 0;
-    GLuint ebo_  = 0;
-    unsigned int indexCount_ = 0;   // <-- was missing before, caused the crash
+    unsigned int vao_        = 0;
+    unsigned int vbo_        = 0;
+    unsigned int ebo_        = 0;
+    unsigned int indexCount_ = 0;   // stored separately after upload
 
     std::vector<SkinnedVertex>  vertices_;
     std::vector<unsigned int>   indices_;
@@ -57,7 +63,6 @@ private:
     void buildBoneHierarchy(const aiNode* node, const aiScene* scene, int parentIdx);
     void uploadToGPU();
 
-    // Renderer needs to call draw() and check vao_
     friend class Renderer;
 };
 
