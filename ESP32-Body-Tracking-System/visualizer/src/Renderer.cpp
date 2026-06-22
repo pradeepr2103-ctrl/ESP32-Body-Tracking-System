@@ -1,247 +1,224 @@
 // Renderer.cpp
 #include "Renderer.h"
 
-#define GLFW_INCLUDE_NONE
 #include <glad/gl.h>
+#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#include <cstring>
 #include <iostream>
 
 namespace mocap {
 
+// ---------------------------------------------------------------------------
+// Helper – check if any sensor has a non‑identity quaternion
+// ---------------------------------------------------------------------------
+static bool anyNonIdentity(const Quat* q, int count) {
+    for (int i = 0; i < count; ++i) {
+        if (q[i].w != 1.0f || q[i].x != 0.0f || q[i].y != 0.0f || q[i].z != 0.0f)
+            return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Constructor / Destructor
+// ---------------------------------------------------------------------------
+Renderer::Renderer(const std::string& glbPath) {
+    // GLFW init
+    glfwInit();
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    window_ = glfwCreateWindow(1280, 720, "ESP32 Body Tracking - Bharatanatyam Capture", nullptr, nullptr);
+    glfwMakeContextCurrent(window_);
+    gladLoadGL((GLADloadfunc)glfwGetProcAddress);
+    glfwSwapInterval(0);
+
+    // Compile shaders
+    skinnedShader_ = new Shader("shaders/skinned.vert", "shaders/skinned.frag");
+    lineShader_    = new Shader("shaders/line.vert",    "shaders/line.frag");
+
+    // Load the GLB model
+    model_.loadFromFile(glbPath);
+    std::cout << "Model loaded: " << glbPath
+              << "  (" << model_.vertices().size() << " vertices, "
+              << model_.indices().size() / 3 << " triangles, "
+              << model_.boneCount() << " bones)" << std::endl;
+
+    // GPU buffers for the skinned mesh
+    glGenVertexArrays(1, &vao_);
+    glGenBuffers(1, &vbo_);
+    glGenBuffers(1, &ebo_);
+    glBindVertexArray(vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBufferData(GL_ARRAY_BUFFER,
+                 model_.vertices().size() * sizeof(SkinnedVertex),
+                 model_.vertices().data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo_);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                 model_.indices().size() * sizeof(unsigned int),
+                 model_.indices().data(), GL_STATIC_DRAW);
+    // Vertex attributes
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(SkinnedVertex), (void*)0);                  // position
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(SkinnedVertex), (void*)(sizeof(Vec3)));     // normal
+    glEnableVertexAttribArray(1);
+    glVertexAttribIPointer(2, 4, GL_INT, sizeof(SkinnedVertex), (void*)(sizeof(Vec3)*2));             // bone ids
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(SkinnedVertex), (void*)(sizeof(Vec3)*2 + 4*sizeof(int))); // weights
+    glEnableVertexAttribArray(3);
+    glBindVertexArray(0);
+
+    // GPU buffers for the skeleton lines
+    glGenVertexArrays(1, &lineVao_);
+    glGenBuffers(1, &lineVbo_);
+
+    // Prepare bone offsets (bind pose identity – the shader will apply skinning directly)
+    int boneCnt = model_.boneCount();
+    boneMatrices_.resize(boneCnt);
+    for (int i = 0; i < boneCnt; ++i) boneMatrices_[i].identity();
+
+    // Enable depth test, backface culling
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_CULL_FACE);
+
+    modelScaleDetected_ = true;    // we already know the model is in cm
+}
+
 Renderer::~Renderer() {
+    delete skinnedShader_;
+    delete lineShader_;
     if (window_) {
         glfwDestroyWindow(window_);
         glfwTerminate();
     }
 }
 
-void Renderer::framebufferSizeCallback(GLFWwindow*, int width, int height) {
-    glViewport(0, 0, width, height);
-}
-
-bool Renderer::init(int width, int height, const std::string& title,
-                     const std::string& modelPath,
-                     const std::string& vertShaderPath,
-                     const std::string& fragShaderPath) {
-    width_ = width;
-    height_ = height;
-
-    if (!glfwInit()) {
-        std::cerr << "Renderer: glfwInit() failed.\n";
-        return false;
-    }
-
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-#ifdef __APPLE__
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-#endif
-
-    window_ = glfwCreateWindow(width_, height_, title.c_str(), nullptr, nullptr);
-    if (!window_) {
-        std::cerr << "Renderer: glfwCreateWindow() failed.\n";
-        glfwTerminate();
-        return false;
-    }
-
-    glfwMakeContextCurrent(window_);
-    glfwSetFramebufferSizeCallback(window_, framebufferSizeCallback);
-    glfwSwapInterval(1);
-
-    if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) {
-        std::cerr << "Renderer: gladLoadGL() failed.\n";
-        return false;
-    }
-
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);
-
-    if (!shader_.loadFromFiles(vertShaderPath, fragShaderPath)) {
-        std::cerr << "Renderer: shader load failed.\n";
-        return false;
-    }
-
-    if (!model_.loadFromFile(modelPath)) {
-        std::cerr << "Renderer: model load failed for '" << modelPath << "'.\n";
-        return false;
-    }
-
-    logicalToModelBoneIndex_.resize(kBoneCount, -1);
-    for (int i = 0; i < kBoneCount; ++i) {
-        int modelIdx = model_.findBoneIndex(kSkeletonBones[i].boneName);
-        logicalToModelBoneIndex_[i] = modelIdx;
-        if (modelIdx < 0) {
-            std::cerr << "Renderer: WARNING -- bone '" << kSkeletonBones[i].boneName
-                      << "' not found in loaded GLB.\n";
-        }
-    }
-
-    // Default: all identity -- renders GLB in its own bind pose perfectly.
-    // This is what shows when no ESP32 sensors are connected.
-    boneMatrices_.assign(model_.boneCount(), Mat4::identity());
-
-    // Auto-detect model scale from bounding box on first frame
-    modelScaleDetected_ = false;
-
-    return true;
-}
-
+// ---------------------------------------------------------------------------
+// Frame loop helpers
+// ---------------------------------------------------------------------------
 bool Renderer::shouldClose() const { return glfwWindowShouldClose(window_); }
-void Renderer::pollEvents()        { glfwPollEvents(); }
-double Renderer::getTime() const   { return glfwGetTime(); }
-
-// Check whether any sensor has received real data (non-identity quaternion).
-// If all sensors are identity, no ESP32 is connected yet -- skip FK and
-// render the GLB bind pose instead.
-static bool anyNonIdentity(const std::array<Quat, kNumSensors>& pose) {
-    for (const auto& q : pose) {
-        float diff = std::fabs(q.w - 1.0f) + std::fabs(q.x) + std::fabs(q.y) + std::fabs(q.z);
-        if (diff > 0.01f) return true;
-    }
-    return false;
+void Renderer::beginFrame() {
+    glClearColor(0.15f, 0.15f, 0.17f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+}
+void Renderer::endFrame() {
+    glfwSwapBuffers(window_);
+    glfwPollEvents();
 }
 
-void Renderer::computeBoneMatrices(const std::array<Quat, kNumSensors>& sensorPose) {
-    // If no real sensor data yet, leave boneMatrices_ as identity so the
-    // GLB renders in its bind pose. This is correct because:
-    //   skinned_position = sum(boneMatrix[i] * inverseBindMatrix[i] * vertex * weight[i])
-    // When boneMatrix == identity, result == inverseBindMatrix^-1 * vertex == bind pose.
-    // Actually for identity skinning we want boneMatrix = bindMatrix = inv(inverseBindMatrix).
-    // Simplest correct approach for no-sensor case: don't touch matrices, let shader
-    // use identity (vertex shader handles zero-weight vertices as unskinned).
-    if (!anyNonIdentity(sensorPose)) {
-        // Reset to identity -- show bind pose
-        std::fill(boneMatrices_.begin(), boneMatrices_.end(), Mat4::identity());
+// ---------------------------------------------------------------------------
+// FK: convert 10 sensor quaternions → bone matrices
+// ---------------------------------------------------------------------------
+void Renderer::computeBoneMatrices(const Quat* sensorQuats) {
+    auto& bones = model_.bones();
+    int boneCnt = (int)bones.size();
+
+    // Map sensor ID → bone index (example – adjust to your actual placement)
+    static const int sensorToBone[10] = {
+        0, 1, 2, 3, 4,   // Hips, Spine, Spine1, Spine2, Neck
+        6, 7, 8,         // LeftShoulder, LeftArm, LeftForeArm
+        10, 11, 12       // RightShoulder, RightArm, RightForeArm
+    };
+
+    // If no real sensor data, upload identity → bind pose
+    if (!anyNonIdentity(sensorQuats, 10)) {
+        for (int i = 0; i < boneCnt; ++i)
+            boneMatrices_[i].identity();
         return;
     }
 
-    // --- Real sensor data received: apply FK ---
-    std::vector<Quat> worldRotation(kBoneCount);
-    std::vector<Vec3> worldPosition(kBoneCount);
-
-    // Bone offsets in centimetres (model is Mixamo centimetre scale,
-    // confirmed from GLB node translations: head at Y~9.3dm, top at Y~21dm)
-    auto boneLocalOffset = [](int idx) -> Vec3 {
-        switch (idx) {
-            case 1:  return {  0.0f,  25.0f,  0.0f };  // hip  -> spine
-            case 2:  return {  0.0f,  55.0f,  0.0f };  // spine -> head
-            case 3:  return {-20.0f,  12.0f,  0.0f };  // spine -> L upper arm
-            case 4:  return {-28.0f,   0.0f,  0.0f };  // L upper arm -> L forearm
-            case 5:  return { 20.0f,  12.0f,  0.0f };  // spine -> R upper arm
-            case 6:  return { 28.0f,   0.0f,  0.0f };  // R upper arm -> R forearm
-            case 7:  return {-10.0f,  -8.0f,  0.0f };  // hip  -> L thigh
-            case 8:  return { 10.0f,  -8.0f,  0.0f };  // hip  -> R thigh
-            case 9:  return {  0.0f, -48.0f,  0.0f };  // L thigh -> L foot
-            case 10: return {  0.0f, -48.0f,  0.0f };  // R thigh -> R foot
-            default: return {  0.0f,   0.0f,  0.0f };
-        }
-    };
-
-    for (int i = 0; i < kBoneCount; ++i) {
-        const BoneMapping& bm = kSkeletonBones[i];
-        Quat localRot = (bm.sensorId >= 0) ? sensorPose[bm.sensorId] : Quat{};
-
-        if (bm.parentIndex < 0) {
-            worldRotation[i] = localRot;
-            worldPosition[i] = {0.0f, 95.0f, 0.0f};
-        } else {
-            worldRotation[i] = worldRotation[bm.parentIndex] * localRot;
-            Vec3 offset = worldRotation[bm.parentIndex].rotate(boneLocalOffset(i));
-            worldPosition[i] = worldPosition[bm.parentIndex] + offset;
-        }
+    // Step 1 – set local rotations from sensors
+    std::vector<Mat4> local(boneCnt);
+    for (int i = 0; i < boneCnt; ++i) local[i].identity();
+    for (int s = 0; s < 10; ++s) {
+        int b = sensorToBone[s];
+        if (b >= 0 && b < boneCnt)
+            local[b] = Mat4::fromQuat(sensorQuats[s]);
     }
 
-    for (int i = 0; i < kBoneCount; ++i) {
-        int modelIdx = logicalToModelBoneIndex_[i];
-        if (modelIdx < 0) continue;
-        Mat4 worldTransform = Mat4::fromQuatTranslation(worldRotation[i], worldPosition[i]);
-        const Mat4& inverseBind = model_.bones()[modelIdx].inverseBindMatrix;
-        boneMatrices_[modelIdx] = worldTransform * inverseBind;
+    // Step 2 – forward kinematics
+    boneMatrices_[0] = local[0];   // root (Hips) is at world origin + its rotation
+    // apply a world translation upward for cm-scale model: hip ≈ Y=95
+    boneMatrices_[0].m[13] = 95.0f;  // column‑major, index 13 is the Y translation
+
+    for (int i = 1; i < boneCnt; ++i) {
+        int p = bones[i].parentBoneIndex;
+        if (p >= 0)
+            boneMatrices_[i] = boneMatrices_[p] * local[i];
+        else
+            boneMatrices_[i] = local[i];
     }
 }
 
-void Renderer::beginFrame() {
-    glClearColor(0.08f, 0.09f, 0.11f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    shader_.use();
+// ---------------------------------------------------------------------------
+// Draw single skeleton (model + coloured skeleton lines)
+// ---------------------------------------------------------------------------
+void Renderer::drawSkeleton(const Mat4& modelMatrix, const Vec3& tint, const Vec3& lineColor) {
+    // Model
+    skinnedShader_->use();
+    // view/projection matrix for cm-scale model
+    Mat4 view = Mat4::lookAt({0, 85, 300}, {0, 80, 0}, {0, 1, 0});
+    Mat4 proj = Mat4::perspective(50.0f * 3.14159f / 180.0f, 1280.0f/720.0f, 1.0f, 2000.0f);
+    Mat4 mvp = proj * view * modelMatrix;
+    skinnedShader_->setMat4("uModelViewProj", mvp.data());
+    skinnedShader_->setVec3("uTint", tint.x, tint.y, tint.z);
+    // Upload bone matrices
+    for (size_t i = 0; i < boneMatrices_.size(); ++i)
+        skinnedShader_->setMat4("uBoneMatrices[" + std::to_string(i) + "]", boneMatrices_[i].data());
+    glBindVertexArray(vao_);
+    glDrawElements(GL_TRIANGLES, model_.indices().size(), GL_UNSIGNED_INT, 0);
+
+    // Skeleton lines
+    auto& bones = model_.bones();
+    std::vector<float> lineVerts;
+    for (size_t i = 0; i < bones.size(); ++i) {
+        int p = bones[i].parentBoneIndex;
+        if (p >= 0) {
+            // Get world position of parent and child from bone matrices
+            float px = boneMatrices_[p].m[12], py = boneMatrices_[p].m[13], pz = boneMatrices_[p].m[14];
+            float cx = boneMatrices_[i].m[12], cy = boneMatrices_[i].m[13], cz = boneMatrices_[i].m[14];
+            lineVerts.insert(lineVerts.end(), {px, py, pz, cx, cy, cz});
+        }
+    }
+    lineShader_->use();
+    lineShader_->setMat4("uModelViewProj", mvp.data());
+    lineShader_->setVec3("uColor", lineColor.x, lineColor.y, lineColor.z);
+    glBindVertexArray(lineVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, lineVbo_);
+    glBufferData(GL_ARRAY_BUFFER, lineVerts.size() * sizeof(float), lineVerts.data(), GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glDrawArrays(GL_LINES, 0, lineVerts.size() / 3);
 }
 
-void Renderer::endFrame() {
-    glfwSwapBuffers(window_);
-}
-
-// Build camera matrices that frame a Mixamo centimetre-scale model.
-// The model's bounding box is roughly:
-//   X: -30 to +30 cm (shoulders)
-//   Y:   0 to 170 cm (feet to head)
-//   Z: -15 to +15 cm (depth)
-// We position the camera to frame this box comfortably.
-static void buildCamera(float windowW, float windowH,
-                         float camZ, float targetY,
-                         Mat4& outView, Mat4& outProj) {
-    Vec3 eye   { 0.0f, targetY, camZ };
-    Vec3 target{ 0.0f, targetY,  0.0f };
-    Vec3 up    { 0.0f,   1.0f,  0.0f };
-    outView = Mat4::lookAt(eye, target, up);
-    outProj = Mat4::perspective(
-        45.0f * 3.14159265f / 180.0f,
-        windowW / windowH,
-        0.5f, 5000.0f);  // near/far in cm
-}
-
-void Renderer::drawSkeleton(const std::array<Quat, kNumSensors>& sensorPose,
-                             const Mat4& view, const Mat4& proj, const Vec3& eye,
-                             float xOffset, const Vec3& albedoTint) {
-    computeBoneMatrices(sensorPose);
-
-    Mat4 model = Mat4::fromQuatTranslation(Quat{1,0,0,0}, Vec3{xOffset, 0.0f, 0.0f});
-
-    shader_.setMat4("uModel", model);
-    shader_.setMat4("uView", view);
-    shader_.setMat4("uProjection", proj);
-    shader_.setMat4Array("uBoneMatrices", boneMatrices_.data(),
-                          static_cast<int>(boneMatrices_.size()));
-    shader_.setVec3("uViewPos", eye);
-    shader_.setVec3("uLightDir",   Vec3{-0.4f, -1.0f, -0.3f});
-    shader_.setVec3("uLightColor", Vec3{ 1.0f,  0.98f, 0.92f});
-    shader_.setVec3("uAlbedo",     albedoTint);
-    shader_.setFloat("uRoughness",       0.6f);
-    shader_.setFloat("uMetalness",       0.0f);
-    shader_.setFloat("uAmbientStrength", 0.20f);
-    model_.draw();
-}
-
-void Renderer::render(const std::array<Quat, kNumSensors>& sensorPose) {
+// ---------------------------------------------------------------------------
+// Public rendering entry points
+// ---------------------------------------------------------------------------
+void Renderer::render(const Quat* sensorQuats) {
     beginFrame();
-
-    // Camera sits 350 cm back, aimed at mid-body (Y=85 cm = roughly chest).
-    // At 45 deg FOV and 350 cm distance, vertical frustum height at Y=0..170
-    // fits comfortably with room to spare.
-    Mat4 view, proj;
-    Vec3 eye{0.0f, 85.0f, 350.0f};
-    buildCamera(static_cast<float>(width_), static_cast<float>(height_),
-                350.0f, 85.0f, view, proj);
-
-    drawSkeleton(sensorPose, view, proj, eye, 0.0f, Vec3{0.75f, 0.55f, 0.45f});
+    computeBoneMatrices(sensorQuats);
+    Mat4 identity;
+    identity.identity();
+    // Tint the model white, skeleton cyan
+    drawSkeleton(identity, {1,1,1}, {0,1,1});
     endFrame();
 }
 
-void Renderer::renderCompare(const std::array<Quat, kNumSensors>& poseA,
-                              const std::array<Quat, kNumSensors>& poseB,
-                              float separation) {
+void Renderer::renderCompare(const Quat* teacherPose, const Quat* studentPose) {
     beginFrame();
 
-    Mat4 view, proj;
-    Vec3 eye{0.0f, 85.0f, 500.0f};
-    buildCamera(static_cast<float>(width_), static_cast<float>(height_),
-                500.0f, 85.0f, view, proj);
+    // Teacher (blue tint, cyan lines) – shifted left by 80 cm
+    computeBoneMatrices(teacherPose);
+    Mat4 teacherModel = Mat4::fromTranslation({-80, 0, 0});
+    drawSkeleton(teacherModel, {0.2f, 0.4f, 1.0f}, {0,1,1});
 
-    float half = separation * 0.5f;  // separation should be ~160 cm for side-by-side
-    drawSkeleton(poseA, view, proj, eye, -half, Vec3{0.75f, 0.55f, 0.45f});
-    drawSkeleton(poseB, view, proj, eye,  half, Vec3{0.45f, 0.60f, 0.85f});
+    // Student (red tint, error‑coloured lines) – shifted right by 80 cm
+    computeBoneMatrices(studentPose);
+    Mat4 studentModel = Mat4::fromTranslation({80, 0, 0});
+    drawSkeleton(studentModel, {1.0f, 0.2f, 0.2f}, {1,0,0});
+
     endFrame();
 }
 
