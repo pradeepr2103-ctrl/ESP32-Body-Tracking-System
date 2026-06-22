@@ -1,174 +1,188 @@
-// Model.cpp
+// Model.cpp — Assimp GLB loader with GPU skinning upload
+// Fixed: safe draw() checks VAO/index count before calling glDrawElements
+
+#define GLFW_INCLUDE_NONE
+#include <glad/gl.h>
+
 #include "Model.h"
+#include "MathTypes.h"
 
 #include <assimp/Importer.hpp>
-#include <assimp/postprocess.h>
 #include <assimp/scene.h>
+#include <assimp/postprocess.h>
 
-#include <cstddef>
-#include <iostream>
-#include <unordered_map>
+#include <cstdio>
+#include <cstring>
+#include <algorithm>
 
 namespace mocap {
 
-namespace {
-Mat4 fromAssimp(const aiMatrix4x4& m) {
-    // Assimp matrices are row-major; our Mat4 is column-major, so transpose
-    // while copying.
-    Mat4 r;
-    r.m[0] = m.a1; r.m[4] = m.a2; r.m[8]  = m.a3; r.m[12] = m.a4;
-    r.m[1] = m.b1; r.m[5] = m.b2; r.m[9]  = m.b3; r.m[13] = m.b4;
-    r.m[2] = m.c1; r.m[6] = m.c2; r.m[10] = m.c3; r.m[14] = m.c4;
-    r.m[3] = m.d1; r.m[7] = m.d2; r.m[11] = m.d3; r.m[15] = m.d4;
+// ── Mat4 from aiMatrix4x4 ─────────────────────────────────────────────────────
+static Mat4 fromAiMat(const aiMatrix4x4& m) {
+    Mat4 r{};
+    // Assimp is row-major; our Mat4 is column-major
+    r.m[0][0]=m.a1; r.m[1][0]=m.a2; r.m[2][0]=m.a3; r.m[3][0]=m.a4;
+    r.m[0][1]=m.b1; r.m[1][1]=m.b2; r.m[2][1]=m.b3; r.m[3][1]=m.b4;
+    r.m[0][2]=m.c1; r.m[1][2]=m.c2; r.m[2][2]=m.c3; r.m[3][2]=m.c4;
+    r.m[0][3]=m.d1; r.m[1][3]=m.d2; r.m[2][3]=m.d3; r.m[3][3]=m.d4;
     return r;
 }
-}
 
+// ─────────────────────────────────────────────────────────────────────────────
 Model::~Model() {
-    if (ebo_) glDeleteBuffers(1, &ebo_);
-    if (vbo_) glDeleteBuffers(1, &vbo_);
     if (vao_) glDeleteVertexArrays(1, &vao_);
+    if (vbo_) glDeleteBuffers(1, &vbo_);
+    if (ebo_) glDeleteBuffers(1, &ebo_);
 }
 
 bool Model::loadFromFile(const std::string& path) {
-    Assimp::Importer importer;
-    const aiScene* scene = importer.ReadFile(
-        path,
+    Assimp::Importer imp;
+    const aiScene* scene = imp.ReadFile(path,
         aiProcess_Triangulate |
-        aiProcess_GenSmoothNormals |
-        aiProcess_FlipUVs |
-        aiProcess_LimitBoneWeights | // caps influences at 4/vertex, matches shader
-        aiProcess_JoinIdenticalVertices);
+        aiProcess_GenNormals  |
+        aiProcess_LimitBoneWeights   // max 4 weights per vertex
+    );
 
-    if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
-        std::cerr << "Model: Assimp failed to load '" << path << "': "
-                  << importer.GetErrorString() << "\n";
+    if (!scene || !scene->mRootNode) {
+        fprintf(stderr, "Assimp: %s\n", imp.GetErrorString());
         return false;
     }
 
-    if (scene->mNumMeshes == 0) {
-        std::cerr << "Model: '" << path << "' contains no meshes.\n";
-        return false;
+    // ── first pass: collect all bone names and build index map ───────────────
+    for (unsigned int mi = 0; mi < scene->mNumMeshes; mi++) {
+        aiMesh* mesh = scene->mMeshes[mi];
+        for (unsigned int bi = 0; bi < mesh->mNumBones; bi++) {
+            aiBone* bone = mesh->mBones[bi];
+            std::string name(bone->mName.C_Str());
+            if (boneNameToIndex_.find(name) == boneNameToIndex_.end()) {
+                int idx = (int)bones_.size();
+                boneNameToIndex_[name] = idx;
+                BoneInfo info;
+                info.name = name;
+                info.inverseBindMatrix = fromAiMat(bone->mOffsetMatrix);
+                info.parentBoneIndex = -1;
+                bones_.push_back(info);
+            }
+        }
     }
 
-    // First pass: walk all meshes, collect vertices + bone weights.
+    // ── second pass: build parent hierarchy from scene node tree ─────────────
+    buildBoneHierarchy(scene->mRootNode, scene, -1);
+
+    // ── third pass: collect mesh geometry ─────────────────────────────────────
     processNode(scene->mRootNode, scene);
 
-    if (bones_.empty()) {
-        std::cerr << "Model: '" << path << "' loaded but has no skinning/bone data. "
-                  << "GPU skinning requires a rigged GLB (e.g. Mixamo export).\n";
+    if (vertices_.empty()) {
+        fprintf(stderr, "Model: no vertices loaded from %s\n", path.c_str());
         return false;
     }
-
-    // Second pass: build parent-child relationships between bones by
-    // walking the node tree and matching node names to bone names.
-    buildBoneHierarchy(scene->mRootNode, scene, -1);
 
     uploadToGPU();
 
-    std::cout << "Model: loaded '" << path << "' -- "
-              << vertices_.size() << " vertices, "
-              << indices_.size() / 3 << " triangles, "
-              << bones_.size() << " bones.\n";
-
+    printf("Model: loaded '%s' -- %zu vertices, %zu triangles, %d bones.\n",
+           path.c_str(), vertices_.size(), indices_.size()/3, (int)bones_.size());
     return true;
 }
 
-void Model::processNode(const aiNode* node, const aiScene* scene) {
-    for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
-        aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
-        processMesh(mesh, scene);
+void Model::buildBoneHierarchy(const aiNode* node, const aiScene*, int parentIdx) {
+    if (!node) return;
+    std::string name(node->mName.C_Str());
+
+    int myIdx = parentIdx;
+    auto it = boneNameToIndex_.find(name);
+    if (it != boneNameToIndex_.end()) {
+        myIdx = it->second;
+        if (bones_[myIdx].parentBoneIndex < 0 && parentIdx >= 0) {
+            bones_[myIdx].parentBoneIndex = parentIdx;
+        }
     }
-    for (unsigned int i = 0; i < node->mNumChildren; ++i) {
+
+    for (unsigned int i = 0; i < node->mNumChildren; i++) {
+        buildBoneHierarchy(node->mChildren[i], nullptr, myIdx);
+    }
+}
+
+void Model::processNode(const aiNode* node, const aiScene* scene) {
+    for (unsigned int i = 0; i < node->mNumMeshes; i++) {
+        processMesh(scene->mMeshes[node->mMeshes[i]], scene);
+    }
+    for (unsigned int i = 0; i < node->mNumChildren; i++) {
         processNode(node->mChildren[i], scene);
     }
 }
 
-void Model::processMesh(aiMesh* mesh, const aiScene* scene) {
-    (void)scene;
-    unsigned int vertexBase = static_cast<unsigned int>(vertices_.size());
+void Model::processMesh(aiMesh* mesh, const aiScene*) {
+    unsigned int baseVertex = (unsigned int)vertices_.size();
 
-    for (unsigned int i = 0; i < mesh->mNumVertices; ++i) {
-        SkinnedVertex v;
-        v.position = {mesh->mVertices[i].x, mesh->mVertices[i].y, mesh->mVertices[i].z};
+    // ── per-vertex bone weight accumulators ───────────────────────────────────
+    struct WeightAccum {
+        int   idx[4]    = {0,0,0,0};
+        float weight[4] = {0,0,0,0};
+        int   count     = 0;
+    };
+    std::vector<WeightAccum> accum(mesh->mNumVertices);
+
+    for (unsigned int bi = 0; bi < mesh->mNumBones; bi++) {
+        aiBone* bone = mesh->mBones[bi];
+        std::string bname(bone->mName.C_Str());
+        auto it = boneNameToIndex_.find(bname);
+        if (it == boneNameToIndex_.end()) continue;
+        int boneIdx = it->second;
+
+        for (unsigned int wi = 0; wi < bone->mNumWeights; wi++) {
+            unsigned int vId = bone->mWeights[wi].mVertexId;
+            float w = bone->mWeights[wi].mWeight;
+            if (vId >= mesh->mNumVertices) continue;
+            WeightAccum& a = accum[vId];
+            if (a.count < 4) {
+                a.idx[a.count]    = boneIdx;
+                a.weight[a.count] = w;
+                a.count++;
+            }
+        }
+    }
+
+    // ── vertices ──────────────────────────────────────────────────────────────
+    for (unsigned int vi = 0; vi < mesh->mNumVertices; vi++) {
+        SkinnedVertex sv{};
+        sv.position = {mesh->mVertices[vi].x,
+                       mesh->mVertices[vi].y,
+                       mesh->mVertices[vi].z};
         if (mesh->HasNormals()) {
-            v.normal = {mesh->mNormals[i].x, mesh->mNormals[i].y, mesh->mNormals[i].z};
+            sv.normal = {mesh->mNormals[vi].x,
+                         mesh->mNormals[vi].y,
+                         mesh->mNormals[vi].z};
         }
         if (mesh->mTextureCoords[0]) {
-            v.u = mesh->mTextureCoords[0][i].x;
-            v.v = mesh->mTextureCoords[0][i].y;
+            sv.u = mesh->mTextureCoords[0][vi].x;
+            sv.v = mesh->mTextureCoords[0][vi].y;
         }
-        vertices_.push_back(v);
+        const WeightAccum& a = accum[vi];
+        float wsum = 0;
+        for (int k=0;k<4;k++) {
+            sv.boneIndices[k] = a.idx[k];
+            sv.boneWeights[k] = a.weight[k];
+            wsum += a.weight[k];
+        }
+        // normalize weights
+        if (wsum > 1e-6f) {
+            for (int k=0;k<4;k++) sv.boneWeights[k] /= wsum;
+        }
+        vertices_.push_back(sv);
     }
 
-    for (unsigned int i = 0; i < mesh->mNumFaces; ++i) {
-        const aiFace& face = mesh->mFaces[i];
-        for (unsigned int j = 0; j < face.mNumIndices; ++j) {
-            indices_.push_back(vertexBase + face.mIndices[j]);
-        }
-    }
-
-    // Bone weights: Assimp exposes these per-mesh as a list of bones, each
-    // with a list of (vertexId, weight) pairs -- the inverse of the layout
-    // our vertex struct wants, so we scatter into per-vertex slots here.
-    std::vector<int> influenceCount(mesh->mNumVertices, 0);
-
-    for (unsigned int b = 0; b < mesh->mNumBones; ++b) {
-        aiBone* bone = mesh->mBones[b];
-        std::string boneName = bone->mName.C_Str();
-
-        int boneIndex;
-        auto it = boneNameToIndex_.find(boneName);
-        if (it == boneNameToIndex_.end()) {
-            boneIndex = static_cast<int>(bones_.size());
-            BoneInfo info;
-            info.name = boneName;
-            info.inverseBindMatrix = fromAssimp(bone->mOffsetMatrix);
-            bones_.push_back(info);
-            boneNameToIndex_[boneName] = boneIndex;
-        } else {
-            boneIndex = it->second;
-        }
-
-        for (unsigned int w = 0; w < bone->mNumWeights; ++w) {
-            unsigned int vId = vertexBase + bone->mWeights[w].mVertexId;
-            float weight = bone->mWeights[w].mWeight;
-
-            int& slot = influenceCount[bone->mWeights[w].mVertexId];
-            if (slot < 4) {
-                vertices_[vId].boneIndices[slot] = boneIndex;
-                vertices_[vId].boneWeights[slot] = weight;
-                slot++;
-            }
-            // 5th+ influence on a vertex is silently dropped --
-            // aiProcess_LimitBoneWeights should prevent this in practice.
+    // ── indices ───────────────────────────────────────────────────────────────
+    for (unsigned int fi = 0; fi < mesh->mNumFaces; fi++) {
+        aiFace& face = mesh->mFaces[fi];
+        for (unsigned int ii = 0; ii < face.mNumIndices; ii++) {
+            indices_.push_back(baseVertex + face.mIndices[ii]);
         }
     }
-}
-
-void Model::buildBoneHierarchy(const aiNode* node, const aiScene* scene, int parentIdx) {
-    (void)scene;
-    std::string nodeName = node->mName.C_Str();
-
-    int myBoneIdx = parentIdx;
-    auto it = boneNameToIndex_.find(nodeName);
-    if (it != boneNameToIndex_.end()) {
-        myBoneIdx = it->second;
-        bones_[myBoneIdx].parentBoneIndex = parentIdx;
-    }
-
-    int childParent = (it != boneNameToIndex_.end()) ? myBoneIdx : parentIdx;
-    for (unsigned int i = 0; i < node->mNumChildren; ++i) {
-        buildBoneHierarchy(node->mChildren[i], scene, childParent);
-    }
-}
-
-int Model::findBoneIndex(const std::string& name) const {
-    auto it = boneNameToIndex_.find(name);
-    return it != boneNameToIndex_.end() ? it->second : -1;
 }
 
 void Model::uploadToGPU() {
+    if (vertices_.empty() || indices_.empty()) return;
+
     glGenVertexArrays(1, &vao_);
     glGenBuffers(1, &vbo_);
     glGenBuffers(1, &ebo_);
@@ -177,46 +191,50 @@ void Model::uploadToGPU() {
 
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER,
-                 static_cast<GLsizeiptr>(vertices_.size() * sizeof(SkinnedVertex)),
+                 (GLsizeiptr)(vertices_.size() * sizeof(SkinnedVertex)),
                  vertices_.data(), GL_STATIC_DRAW);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo_);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-                 static_cast<GLsizeiptr>(indices_.size() * sizeof(unsigned int)),
+                 (GLsizeiptr)(indices_.size() * sizeof(unsigned int)),
                  indices_.data(), GL_STATIC_DRAW);
 
-    // layout(location=0) position
+    // location 0: position
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(SkinnedVertex),
-                           reinterpret_cast<void*>(offsetof(SkinnedVertex, position)));
-
-    // layout(location=1) normal
+                          (void*)offsetof(SkinnedVertex, position));
+    // location 1: normal
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(SkinnedVertex),
-                           reinterpret_cast<void*>(offsetof(SkinnedVertex, normal)));
-
-    // layout(location=2) texcoord
+                          (void*)offsetof(SkinnedVertex, normal));
+    // location 2: uv
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(SkinnedVertex),
-                           reinterpret_cast<void*>(offsetof(SkinnedVertex, u)));
-
-    // layout(location=3) bone indices (integer attribute!)
+                          (void*)offsetof(SkinnedVertex, u));
+    // location 3: bone indices (INTEGER attrib)
     glEnableVertexAttribArray(3);
     glVertexAttribIPointer(3, 4, GL_INT, sizeof(SkinnedVertex),
-                            reinterpret_cast<void*>(offsetof(SkinnedVertex, boneIndices)));
-
-    // layout(location=4) bone weights
+                           (void*)offsetof(SkinnedVertex, boneIndices));
+    // location 4: bone weights
     glEnableVertexAttribArray(4);
     glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(SkinnedVertex),
-                           reinterpret_cast<void*>(offsetof(SkinnedVertex, boneWeights)));
+                          (void*)offsetof(SkinnedVertex, boneWeights));
 
     glBindVertexArray(0);
+    indexCount_ = (unsigned int)indices_.size();
 }
 
 void Model::draw() const {
+    // SAFE: only draw if VAO and indices are valid
+    if (vao_ == 0 || indexCount_ == 0) return;
     glBindVertexArray(vao_);
-    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(indices_.size()), GL_UNSIGNED_INT, nullptr);
+    glDrawElements(GL_TRIANGLES, (GLsizei)indexCount_, GL_UNSIGNED_INT, nullptr);
     glBindVertexArray(0);
+}
+
+int Model::findBoneIndex(const std::string& name) const {
+    auto it = boneNameToIndex_.find(name);
+    return (it != boneNameToIndex_.end()) ? it->second : -1;
 }
 
 } // namespace mocap
