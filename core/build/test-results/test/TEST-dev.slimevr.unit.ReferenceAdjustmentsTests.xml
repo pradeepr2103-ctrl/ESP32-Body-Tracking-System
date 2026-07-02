@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dev.slimevr.unit.ReferenceAdjustmentsTests" tests="10" skipped="0" failures="0" errors="0" timestamp="2026-07-02T06:04:13.351Z" hostname="pradeep-ASUS-TUF" time="0.022">
+  <properties/>
+  <testcase name="Adjustment Full Test of Tracker(0,0,0)" classname="dev.slimevr.unit.ReferenceAdjustmentsTests" time="0.007"/>
+  <testcase name="Adjustment Full Test of Tracker(15,45,15)" classname="dev.slimevr.unit.ReferenceAdjustmentsTests" time="0.002"/>
+  <testcase name="Adjustment Full Test of Tracker(35,90,35)" classname="dev.slimevr.unit.ReferenceAdjustmentsTests" time="0.001"/>
+  <testcase name="Adjustment Full Test of Tracker(-15,180,-15)" classname="dev.slimevr.unit.ReferenceAdjustmentsTests" time="0.002"/>
+  <testcase name="Adjustment Full Test of Tracker(-35,270,-35)" classname="dev.slimevr.unit.ReferenceAdjustmentsTests" time="0.001"/>
+  <testcase name="Adjustment Yaw Test of Tracker(0,0,0)" classname="dev.slimevr.unit.ReferenceAdjustmentsTests" time="0.001"/>
+  <testcase name="Adjustment Yaw Test of Tracker(15,45,15)" classname="dev.slimevr.unit.ReferenceAdjustmentsTests" time="0.001"/>
+  <testcase name="Adjustment Yaw Test of Tracker(35,90,35)" classname="dev.slimevr.unit.ReferenceAdjustmentsTests" time="0.001"/>
+  <testcase name="Adjustment Yaw Test of Tracker(-15,180,-15)" classname="dev.slimevr.unit.ReferenceAdjustmentsTests" time="0.001"/>
+  <testcase name="Adjustment Yaw Test of Tracker(-35,270,-35)" classname="dev.slimevr.unit.ReferenceAdjustmentsTests" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

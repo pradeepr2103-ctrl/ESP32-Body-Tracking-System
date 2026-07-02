@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="io.github.axisangles.ktmath.QuaternionTest" tests="37" skipped="0" failures="0" errors="0" timestamp="2026-07-02T06:04:13.462Z" hostname="pradeep-ASUS-TUF" time="0.011">
+  <properties/>
+  <testcase name="toMatrix()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="rightDiv()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="angleQ()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="angleR()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="fromTo()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.001"/>
+  <testcase name="toRotationVector()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="reject()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="angleToQ()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.001"/>
+  <testcase name="angleToR()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="fromRotationVector()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="project()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="timesScalarLhs()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.001"/>
+  <testcase name="timesScalarRhs()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="pow()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.001"/>
+  <testcase name="axis()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="plus()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="align()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="lerpQ()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="lerpR()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="times()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.001"/>
+  <testcase name="rightDivFloatLhs()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="rightDivFloatRhs()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.001"/>
+  <testcase name="sandwichUnitX()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="sandwichUnitY()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="sandwichUnitZ()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="angleAboutQ()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="angleAboutR()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="eulerAnglesXYZ()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="eulerAnglesXZY()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="eulerAnglesYXZ()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="eulerAnglesYZX()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="eulerAnglesZXY()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="eulerAnglesZYX()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.001"/>
+  <testcase name="interpQ()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="interpR()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="inverse()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <testcase name="sandwich()" classname="io.github.axisangles.ktmath.QuaternionTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
