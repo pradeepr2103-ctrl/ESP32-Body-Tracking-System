@@ -1,0 +1,207 @@
+---
+server:
+  trackerPort: 6969
+  imuAlignment: null
+  useMagnetometerOnAllTrackers: false
+filters:
+  type: "prediction"
+  amount: 0.2
+driftCompensation:
+  enabled: false
+  prediction: false
+  amount: 0.8
+  maxResets: 6
+autoBone:
+  cursorIncrement: 2
+  minDataDistance: 1
+  maxDataDistance: 1
+  numEpochs: 50
+  printEveryNumEpochs: 25
+  initialAdjustRate: 10.0
+  adjustRateDecay: 1.0
+  slideErrorFactor: 1.0
+  offsetSlideErrorFactor: 0.0
+  footHeightOffsetErrorFactor: 0.0
+  bodyProportionErrorFactor: 0.05
+  heightErrorFactor: 0.0
+  positionErrorFactor: 0.0
+  positionOffsetErrorFactor: 0.0
+  calcInitError: false
+  randomizeFrameOrder: true
+  scaleEachStep: true
+  sampleCount: 1500
+  sampleRateMs: 20
+  saveRecordings: false
+  useSkeletonHeight: false
+  randSeed: 4
+  useFrameFiltering: false
+  maxFinalError: 0.03
+skeleton:
+  toggles: {}
+  values: {}
+  offsets:
+    hipLength: 0.04
+    upperLegLength: 0.42
+    footLength: 0.05
+    handDistanceY: 0.035
+    headShift: 0.1
+    lowerArmLength: 0.26
+    shouldersWidth: 0.35
+    waistLength: 0.2
+    handDistanceZ: 0.13
+    chestOffset: 0.0
+    chestLength: 0.16
+    lowerLegLength: 0.5
+    neckLength: 0.1
+    upperArmLength: 0.26
+    hipsWidth: 0.26
+    footShift: -0.05
+    elbowOffset: 0.0
+    hipOffset: 0.0
+    shouldersDistance: 0.08
+    upperChestLength: 0.16
+    skeletonOffset: 0.0
+  hmdHeight: 0.0
+  floorHeight: 0.0
+legTweaks:
+  correctionStrength: 0.3
+  alwaysUseFloorclip: false
+tapDetection:
+  yawResetDelay: 0.2
+  fullResetDelay: 1.0
+  mountingResetDelay: 1.0
+  yawResetEnabled: true
+  fullResetEnabled: true
+  mountingResetEnabled: true
+  yawResetTracker: "CHEST"
+  mountingResetTracker: "RIGHT_UPPER_LEG"
+  fullResetTracker: "LEFT_UPPER_LEG"
+  setupMode: false
+  yawResetTaps: 2
+  fullResetTaps: 3
+  mountingResetTaps: 3
+  numberTrackersOverThreshold: 1
+resetsConfig:
+  resetMountingFeet: false
+  mode: "TPOSE_DOWN"
+  yawResetSmoothTime: 0.0
+  saveMountingReset: false
+  resetHmdPitch: false
+  lastMountingMethod: "AUTOMATIC"
+  yawResetDelay: 0.0
+  fullResetDelay: 0.0
+  mountingResetDelay: 0.0
+stayAlignedConfig:
+  enabled: false
+  standingRelaxedPose:
+    enabled: false
+    upperLegAngleInDeg: 0.0
+    lowerLegAngleInDeg: 0.0
+    footAngleInDeg: 0.0
+  sittingRelaxedPose:
+    enabled: false
+    upperLegAngleInDeg: 0.0
+    lowerLegAngleInDeg: 0.0
+    footAngleInDeg: 0.0
+  flatRelaxedPose:
+    enabled: false
+    upperLegAngleInDeg: 0.0
+    lowerLegAngleInDeg: 0.0
+    footAngleInDeg: 0.0
+  setupComplete: false
+trackers:
+  CHEST:
+    customName: null
+    designation: "body:upper_chest"
+    hide: false
+    adjustment: null
+    mountingOrientation: null
+    mountingResetOrientation: null
+    allowDriftCompensation: false
+    shouldHaveMagEnabled: false
+  R_SH:
+    customName: null
+    designation: "body:right_lower_leg"
+    hide: false
+    adjustment: null
+    mountingOrientation: null
+    mountingResetOrientation: null
+    allowDriftCompensation: false
+    shouldHaveMagEnabled: false
+  L_TH:
+    customName: null
+    designation: "body:left_upper_leg"
+    hide: false
+    adjustment: null
+    mountingOrientation: null
+    mountingResetOrientation: null
+    allowDriftCompensation: false
+    shouldHaveMagEnabled: false
+  HIPS:
+    customName: null
+    designation: "body:hip"
+    hide: false
+    adjustment: null
+    mountingOrientation: null
+    mountingResetOrientation: null
+    allowDriftCompensation: false
+    shouldHaveMagEnabled: false
+  R_TH:
+    customName: null
+    designation: "body:right_upper_leg"
+    hide: false
+    adjustment: null
+    mountingOrientation: null
+    mountingResetOrientation: null
+    allowDriftCompensation: false
+    shouldHaveMagEnabled: false
+  L_SH:
+    customName: null
+    designation: "body:left_lower_leg"
+    hide: false
+    adjustment: null
+    mountingOrientation: null
+    mountingResetOrientation: null
+    allowDriftCompensation: false
+    shouldHaveMagEnabled: false
+  L_UA:
+    customName: null
+    designation: "body:left_upper_arm"
+    hide: false
+    adjustment: null
+    mountingOrientation: null
+    mountingResetOrientation: null
+    allowDriftCompensation: false
+    shouldHaveMagEnabled: false
+  L_FA:
+    customName: null
+    designation: "body:left_lower_arm"
+    hide: false
+    adjustment: null
+    mountingOrientation: null
+    mountingResetOrientation: null
+    allowDriftCompensation: false
+    shouldHaveMagEnabled: false
+  R_FA:
+    customName: null
+    designation: "body:right_lower_arm"
+    hide: false
+    adjustment: null
+    mountingOrientation: null
+    mountingResetOrientation: null
+    allowDriftCompensation: false
+    shouldHaveMagEnabled: false
+  R_UA:
+    customName: null
+    designation: "body:right_upper_arm"
+    hide: false
+    adjustment: null
+    mountingOrientation: null
+    mountingResetOrientation: null
+    allowDriftCompensation: false
+    shouldHaveMagEnabled: false
+bridges: {}
+knownDevices: []
+velocityConfig:
+  sendDerivedVelocity: false
+modelVersion: "15"

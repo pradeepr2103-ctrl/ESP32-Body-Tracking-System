@@ -1,0 +1,10 @@
+{
+  "name": "solarxr-protocol",
+  "version": "0.0.0",
+  "main": "index.js",
+  "module": "index.js",
+  "types": "index.d.ts",
+  "dependencies": {
+    "flatbuffers": "^22.10.26"
+  }
+}

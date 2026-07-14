@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SlimeVR Mocap Viewer</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div id="app">
+    <canvas id="canvas"></canvas>
+    <div id="overlay">
+      <div id="status-bar">
+        <span id="conn-status">Connecting...</span>
+        <span id="tracker-count">Trackers: 0</span>
+        <span id="model-status"></span>
+      </div>
+      <div id="controls">
+        <button class="btn" data-cmd="reset-yaw" title="Zero yaw rotation on all trackers">Reset Yaw</button>
+        <button class="btn" data-cmd="reset-full" title="Full pose reset (T-pose)">Reset Full</button>
+        <button class="btn" data-cmd="reset-mounting" title="Reset mounting orientation">Reset Mounting</button>
+        <button class="btn btn-rec" data-cmd="autobone-record" title="Start AutoBone recording">AB Record</button>
+        <button class="btn btn-proc" data-cmd="autobone-process" title="Process AutoBone recording">AB Process</button>
+        <button class="btn btn-apply" data-cmd="autobone-apply" title="Apply AutoBone results">AB Apply</button>
+      </div>
+      <div id="info">
+        <p>Connect your sensors and ensure the SlimeVR server is running.</p>
+        <p>WebSocket: <span id="ws-url">ws://localhost:21110</span></p>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+# --- Old Electron GUI (not ours) ---
+gui/
+
+# --- Java / Gradle ---
+.gradle/
+build/
+out/
+*.class
+*.jar
+*.war
+*.vite
+
+# --- Kotlin ---
+.kotlin/
+
+# --- Node.js (all packages) ---
+node_modules/
+gui/node_modules/
+gui-mocap/node_modules/
+
+# --- Build output ---
+dist/
+gui/out/
+gui/dist/
+gui-mocap/dist/
+
+# --- IDE ---
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- Generated / scratch ---
+repomix-output.md
+*.log
+.env.local
+*.hprof
+build/
+.kotlin/
