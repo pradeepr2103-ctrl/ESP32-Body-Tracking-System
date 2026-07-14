@@ -15,17 +15,28 @@
         <span id="tracker-count">Trackers: 0</span>
         <span id="model-status"></span>
       </div>
-      <div id="controls">
-        <button class="btn" data-cmd="reset-yaw" title="Zero yaw rotation on all trackers">Reset Yaw</button>
-        <button class="btn" data-cmd="reset-full" title="Full pose reset (T-pose)">Reset Full</button>
-        <button class="btn" data-cmd="reset-mounting" title="Reset mounting orientation">Reset Mounting</button>
-        <button class="btn btn-rec" data-cmd="autobone-record" title="Start AutoBone recording">AB Record</button>
-        <button class="btn btn-proc" data-cmd="autobone-process" title="Process AutoBone recording">AB Process</button>
-        <button class="btn btn-apply" data-cmd="autobone-apply" title="Apply AutoBone results">AB Apply</button>
-      </div>
-      <div id="info">
-        <p>Connect your sensors and ensure the SlimeVR server is running.</p>
-        <p>WebSocket: <span id="ws-url">ws://localhost:21110</span></p>
+      <div id="bottom-dock">
+        <div id="info">
+          <p>Connect your sensors and ensure the SlimeVR server is running.</p>
+          <p>WebSocket: <span id="ws-url">ws://localhost:21110</span></p>
+        </div>
+        <div id="controls">
+          <button class="btn" data-cmd="reset-yaw" title="Zero yaw rotation on all trackers">Reset Yaw</button>
+          <button class="btn" data-cmd="reset-full" title="Full pose reset (T-pose)">Reset Full</button>
+          <button class="btn" data-cmd="reset-mounting" title="Reset mounting orientation">Reset Mounting</button>
+          <button class="btn btn-rec" data-cmd="autobone-record" title="Start AutoBone recording">AB Record</button>
+          <button class="btn btn-proc" data-cmd="autobone-process" title="Process AutoBone recording">AB Process</button>
+          <button class="btn btn-apply" data-cmd="autobone-apply" title="Apply AutoBone results">AB Apply</button>
+          <button class="btn" id="toggle-mock" title="Drive the skeleton with a synthetic walk cycle instead of live sensor data">Test: Walk Cycle</button>
+          <button class="btn" id="toggle-view" title="Switch between the mesh model and the color-coded stick figure (needed to see the 90° highlight while a model is loaded)">View: Model</button>
+          <span class="controls-sep"></span>
+          <button class="btn btn-rec" id="rec-toggle" title="Record the currently active bone-quaternion stream (live or mock)">Record</button>
+          <button class="btn btn-apply" id="play-toggle" title="Play back the last recording or an imported file" disabled>Play</button>
+          <button class="btn" id="rec-export" title="Download the last recording as JSON" disabled>Export</button>
+          <button class="btn" id="rec-import" title="Load a quaternion recording JSON file">Import</button>
+          <input type="file" id="rec-file-input" accept="application/json" style="display:none" />
+          <span id="rec-status" class="rec-status"></span>
+        </div>
       </div>
     </div>
   </div>

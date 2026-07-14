@@ -5,7 +5,7 @@ import { BoneT, BodyPart } from 'solarxr-protocol';
 const BONE_RADIUS = 0.02;
 const JOINT_RADIUS = 0.03;
 
-const BONE_PARENT: Partial<Record<BodyPart, BodyPart>> = {
+export const BONE_PARENT: Partial<Record<BodyPart, BodyPart>> = {
   [BodyPart.HEAD]: BodyPart.NECK,
   [BodyPart.NECK]: BodyPart.UPPER_CHEST,
   [BodyPart.UPPER_CHEST]: BodyPart.CHEST,
@@ -28,26 +28,61 @@ const BONE_PARENT: Partial<Record<BodyPart, BodyPart>> = {
   [BodyPart.RIGHT_SHOULDER]: BodyPart.UPPER_CHEST,
 };
 
-const BONE_COLORS: Partial<Record<BodyPart, number>> = {
-  [BodyPart.HEAD]: 0xff8888,
-  [BodyPart.NECK]: 0xff8888,
-  [BodyPart.UPPER_CHEST]: 0x88ff88,
-  [BodyPart.CHEST]: 0x88ff88,
-  [BodyPart.WAIST]: 0x88ff88,
-  [BodyPart.HIP]: 0x88ff88,
-  [BodyPart.LEFT_UPPER_LEG]: 0x8888ff,
-  [BodyPart.LEFT_LOWER_LEG]: 0x8888ff,
-  [BodyPart.LEFT_FOOT]: 0x4444cc,
-  [BodyPart.RIGHT_UPPER_LEG]: 0xff88ff,
-  [BodyPart.RIGHT_LOWER_LEG]: 0xff88ff,
-  [BodyPart.RIGHT_FOOT]: 0xcc44cc,
-  [BodyPart.LEFT_UPPER_ARM]: 0x88ffff,
-  [BodyPart.LEFT_LOWER_ARM]: 0x88ffff,
-  [BodyPart.LEFT_HAND]: 0x44cccc,
-  [BodyPart.RIGHT_UPPER_ARM]: 0xffff88,
-  [BodyPart.RIGHT_LOWER_ARM]: 0xffff88,
-  [BodyPart.RIGHT_HAND]: 0xcccc44,
-};
+// Default resting colour for every stick-figure bone/joint. Individual
+// per-bone colours were replaced with a single blue so the whole skeleton
+// reads the same way at rest, making the green 90° highlight below stand out
+// clearly against it.
+const BASE_COLOR = 0x2299ff;
+const HIGHLIGHT_COLOR = 0x00ff00;
+
+// ---- 90° highlight configuration -------------------------------------------
+// For each limb, the three joints that make up the knee/elbow angle and
+// which body parts should turn green when that angle is ~90°.
+//   legs: hip -> knee -> ankle
+//   arms: chest -> elbow -> wrist   (chest is used as the shoulder reference
+//         because a shoulder tracker isn't always present in the data)
+// NOTE on joint positions: each BoneT's headPositionG is the PROXIMAL
+// (start) point of that bone - the joint between two bones is therefore the
+// CHILD bone's headPositionG, not the parent's. E.g. LEFT_LOWER_LEG's
+// headPositionG is the knee (end of the upper leg / start of the lower leg);
+// LEFT_FOOT's headPositionG is the ankle. Using LEFT_UPPER_LEG's own
+// headPositionG as "the knee" (as an earlier version of this file did) is
+// wrong - it's the same point as HIP, so the angle would always read as 0.
+const ANGLE_HIGHLIGHTS: {
+  jointA: BodyPart; // proximal (hip / shoulder)
+  jointB: BodyPart; // middle   (knee / elbow) - this bone's headPositionG
+  jointC: BodyPart; // distal   (ankle / wrist) - this bone's headPositionG
+  highlightParts: BodyPart[];
+}[] = [
+  {
+    jointA: BodyPart.HIP,
+    jointB: BodyPart.LEFT_LOWER_LEG,
+    jointC: BodyPart.LEFT_FOOT,
+    highlightParts: [BodyPart.LEFT_LOWER_LEG, BodyPart.LEFT_FOOT],
+  },
+  {
+    jointA: BodyPart.HIP,
+    jointB: BodyPart.RIGHT_LOWER_LEG,
+    jointC: BodyPart.RIGHT_FOOT,
+    highlightParts: [BodyPart.RIGHT_LOWER_LEG, BodyPart.RIGHT_FOOT],
+  },
+  {
+    jointA: BodyPart.LEFT_UPPER_ARM,
+    jointB: BodyPart.LEFT_LOWER_ARM,
+    jointC: BodyPart.LEFT_HAND,
+    highlightParts: [BodyPart.LEFT_LOWER_ARM, BodyPart.LEFT_HAND],
+  },
+  {
+    jointA: BodyPart.RIGHT_UPPER_ARM,
+    jointB: BodyPart.RIGHT_LOWER_ARM,
+    jointC: BodyPart.RIGHT_HAND,
+    highlightParts: [BodyPart.RIGHT_LOWER_ARM, BodyPart.RIGHT_HAND],
+  },
+];
+
+// |dot product| of the two limb direction vectors below this value means the
+// angle between them is within ~8.5° of 90° (cos 90° = 0).
+const ANGLE_DOT_THRESHOLD = 0.15;
 
 // This mapping is for the Mixamo X Bot
 /* const SLIMEVR_TO_MIXAMO: Partial<Record<BodyPart, string>> = {
@@ -111,6 +146,12 @@ export class MocapScene {
   private mixamoLoading = false;
   private onModelStatus: ((status: string) => void) | null = null;
 
+  // When true, always render the color-coded stick figure even if a mesh
+  // model is loaded. The 90° highlight only exists on the stick figure's
+  // per-bone materials - the GLB mesh has no equivalent, so this is the only
+  // way to see the highlight while a model is loaded.
+  private forceStickFigure = false;
+
   // World rotation of each bone in the GLB's rest pose. Server rotations are
   // applied as deltas on top of these, so identity server rotations keep the
   // model in its natural default pose.
@@ -119,6 +160,14 @@ export class MocapScene {
   private parentWorldInv = new THREE.Quaternion();
   private worldQuat = new THREE.Quaternion();
   private desiredWorld = new THREE.Quaternion();
+
+  // Character root transform - where the whole body stands on the grid and
+  // which way it faces. Kept separate from bone-local pose data and applied
+  // once per frame, the same split a game engine's character controller makes
+  // between "root motion" and "in-place animation clip".
+  private rootPosition = new THREE.Vector3(0, 0, 0);
+  private rootYawQuat = new THREE.Quaternion();
+  private readonly UP_AXIS = new THREE.Vector3(0, 1, 0);
 
   constructor(canvas: HTMLCanvasElement, onModelStatus?: (status: string) => void) {
     this.onModelStatus = onModelStatus ?? null;
@@ -252,6 +301,16 @@ export class MocapScene {
 
       this.scene.add(model);
       this.mixamoScene = model;
+      model.visible = !this.forceStickFigure;
+
+      if (this.mixamoBones.size === 0) {
+        this.onModelStatus?.('Model loaded, but 0/20 bones matched — check bone names in console');
+        console.warn(
+          'No SLIMEVR_TO_MIXAMO names matched this model\'s skeleton. ' +
+          'Falling back to stick figure. Available bone names logged above.',
+        );
+        return; // mixamoLoaded stays false -> updateStickFigure() keeps rendering
+      }
 
       // Compute bind-pose world rotations
       this.mixamoScene.updateMatrixWorld(true);
@@ -260,15 +319,38 @@ export class MocapScene {
       }
 
       this.mixamoLoaded = true;
-      this.onModelStatus?.('Model loaded');
+      this.onModelStatus?.(`Model loaded (${this.mixamoBones.size}/20 bones matched)`);
     } catch (err) {
       this.onModelStatus?.(`Model error: ${(err as Error).message}`);
       this.mixamoLoading = false;
     }
   }
 
+  /**
+   * Places the whole character on the grid: world position (x, z) and facing
+   * (yaw, radians). Ground height (y) is intentionally not touched here - the
+   * small vertical bob is part of the in-place animation, not the root
+   * transform, so it stays consistent regardless of where on the grid the
+   * character is standing. Call this once per frame before update(bones).
+   */
+  setRootMotion(x: number, z: number, yawRad: number) {
+    this.rootPosition.set(x, 0, z);
+    this.rootYawQuat.setFromAxisAngle(this.UP_AXIS, yawRad);
+    if (this.mixamoScene) {
+      this.mixamoScene.position.copy(this.rootPosition);
+      this.mixamoScene.quaternion.copy(this.rootYawQuat);
+    }
+  }
+
+  /** Flips between the mesh model and the color-coded stick figure. Returns the new state (true = stick figure forced on). No-op visually if no model is loaded, since the stick figure is already what's shown. */
+  toggleStickFigureView(): boolean {
+    this.forceStickFigure = !this.forceStickFigure;
+    if (this.mixamoScene) this.mixamoScene.visible = !this.forceStickFigure;
+    return this.forceStickFigure;
+  }
+
   update(bones: BoneT[]) {
-    if (this.mixamoLoaded) {
+    if (this.mixamoLoaded && !this.forceStickFigure) {
       this.applyMixamoPose(bones);
       this.hideStickFigure();
     } else {
@@ -373,7 +455,7 @@ export class MocapScene {
       let node = this.nodes.get(bp);
 
       if (!node) {
-        const color = BONE_COLORS[bp] ?? 0x888888;
+        const color = BASE_COLOR;
         const jointGeo = new THREE.SphereGeometry(JOINT_RADIUS, 12, 12);
         const jointMat = new THREE.MeshStandardMaterial({
           color,
@@ -401,22 +483,67 @@ export class MocapScene {
         node.joint.visible = false;
         continue;
       }
-      node.joint.position.set(p.x, p.y, p.z);
+
+      // Local (in-place) position/rotation transformed into world space by
+      // the character root - same root-motion split as the mixamo model.
+      const worldP = new THREE.Vector3(p.x, p.y, p.z)
+        .applyQuaternion(this.rootYawQuat)
+        .add(this.rootPosition);
+      node.joint.position.copy(worldP);
 
       const len = bone.boneLength;
       if (len > 0.001) {
         node.mesh.visible = true;
-        node.mesh.position.set(p.x, p.y - len / 2, p.z);
-        node.mesh.quaternion.set(q.x, q.y, q.z, q.w);
+        const localMid = new THREE.Vector3(p.x, p.y - len / 2, p.z)
+          .applyQuaternion(this.rootYawQuat)
+          .add(this.rootPosition);
+        node.mesh.position.copy(localMid);
+        node.mesh.quaternion.copy(this.rootYawQuat).multiply(
+          new THREE.Quaternion(q.x, q.y, q.z, q.w),
+        );
         node.mesh.scale.y = len;
       } else {
         node.mesh.visible = false;
       }
     }
 
+    // Which limbs are currently bent to ~90° (knee or elbow)?
+    const highlightSet = new Set<BodyPart>();
+    const dirA = new THREE.Vector3();
+    const dirB = new THREE.Vector3();
+
+    for (const cfg of ANGLE_HIGHLIGHTS) {
+      const a = this.nodes.get(cfg.jointA)?.joint.position;
+      const b = this.nodes.get(cfg.jointB)?.joint.position;
+      const c = this.nodes.get(cfg.jointC)?.joint.position;
+      if (!a || !b || !c) continue;
+      if (!seen.has(cfg.jointA) || !seen.has(cfg.jointB) || !seen.has(cfg.jointC)) continue;
+
+      dirA.subVectors(b, a).normalize();
+      dirB.subVectors(c, b).normalize();
+      const dot = Math.abs(dirA.dot(dirB));
+
+      if (dot < ANGLE_DOT_THRESHOLD) {
+        for (const part of cfg.highlightParts) highlightSet.add(part);
+      }
+    }
+
     for (const [bp, node] of this.nodes) {
       node.joint.visible = seen.has(bp);
-      if (!seen.has(bp)) node.mesh.visible = false;
+      if (!seen.has(bp)) {
+        node.mesh.visible = false;
+        continue;
+      }
+
+      const color = highlightSet.has(bp) ? HIGHLIGHT_COLOR : BASE_COLOR;
+
+      const jointMat = node.joint.material as THREE.MeshStandardMaterial;
+      jointMat.color.set(color);
+      jointMat.emissive.set(color);
+      jointMat.emissiveIntensity = highlightSet.has(bp) ? 0.7 : 0.3;
+
+      const meshMat = node.mesh.material as THREE.MeshStandardMaterial;
+      meshMat.color.set(color);
     }
 
     this.updateBoneLines(seen);
